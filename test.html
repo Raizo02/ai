@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Dragon's Breath | AR Face Filter</title>
+    
+    <!-- Three.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    
+    <!-- MediaPipe Face Mesh & Camera Utils -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #000;
+            font-family: 'Helvetica Neue', Arial, sans-serif;
+        }
+
+        #canvas-container {
+            width: 100vw;
+            height: 100vh;
+            display: block;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 1;
+        }
+
+        /* Intro Overlay */
+        #intro {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            background: rgba(0, 0, 0, 0.95);
+            color: #fff;
+            z-index: 20;
+            transition: opacity 0.5s ease-out;
+            cursor: pointer;
+            text-align: center;
+            padding: 20px;
+        }
+
+        /* Status indicator */
+        #status {
+            position: absolute;
+            bottom: 30px;
+            width: 100%;
+            text-align: center;
+            color: #ff4500;
+            font-size: 1rem;
+            z-index: 10;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.5s;
+            font-weight: bold;
+            text-shadow: 0 0 10px #ff0000;
+            letter-spacing: 2px;
+        }
+
+        /* Hidden video element for texture */
+        #webcam-video {
+            display: none;
+        }
+
+        h1 {
+            font-weight: 800;
+            letter-spacing: 3px;
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            background: linear-gradient(to bottom, #ffff00, #ff0000);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        p {
+            font-size: 0.9rem;
+            color: #ccc;
+            letter-spacing: 1px;
+            line-height: 1.6;
+        }
+
+        .instruction {
+            margin-top: 30px;
+            font-size: 1rem;
+            color: #fff;
+            background: rgba(255, 69, 0, 0.2);
+            border: 1px solid #ff4500;
+            padding: 20px;
+            border-radius: 8px;
+        }
+
+        .loader {
+            border: 4px solid #333;
+            border-top: 4px solid #ff4500;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin-top: 30px;
+            display: none;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Intro / Start Screen -->
+    <div id="intro">
+        <h1>Dragon's Breath</h1>
+        <p>AR FACE FILTER</p>
+        
+        <div class="instruction">
+            <p><strong>OPEN MOUTH</strong> to spit fire.</p>
+            <p style="font-size: 0.8em; color: #aaa; margin-top: 10px;">Open WIDE to auto-capture!</p>
+        </div>
+
+        <p style="margin-top: 30px; font-size: 0.7rem; color: #666;">Requires Camera Access.</p>
+        
+        <div id="loading" class="loader"></div>
+        <button id="start-btn" style="margin-top: 20px; padding: 15px 40px; background: #ff4500; color: #fff; border: none; border-radius: 30px; font-family: inherit; font-weight: bold; cursor: pointer; letter-spacing: 1px; text-transform: uppercase; box-shadow: 0 0 20px rgba(255,69,0,0.5);">Ignite</button>
+    </div>
+
+    <!-- UI Elements -->
+    <div id="status">System Ready</div>
+    
+    <video id="webcam-video" playsinline muted autoplay></video>
+    
+    <!-- WebGL Container -->
+    <div id="canvas-container"></div>
+
+    <script>
+        /**
+         * CONFIGURATION
+         */
+        const config = {
+            mouthThreshold: 0.1,  // Minimum openness to start fire
+            captureThreshold: 0.6, // Openness to trigger auto-capture
+            maxParticles: 1000,
+            fireSpeed: 0.2,
+            videoWidth: 1280,
+            videoHeight: 720
+        };
+
+        /**
+         * STATE
+         */
+        const state = {
+            faceDetected: false,
+            mouthOpenness: 0,     // 0.0 to 1.0
+            mouthPosition: new THREE.Vector3(0, 0, 0),
+            hasCaptured: false,   // Prevents spamming capture
+            triggerCapture: false // Flag to capture next frame
+        };
+
+        // DOM Elements
+        const introEl = document.getElementById('intro');
+        const startBtn = document.getElementById('start-btn');
+        const loadingEl = document.getElementById('loading');
+        const statusEl = document.getElementById('status');
+        const webcamVideo = document.getElementById('webcam-video');
+
+        /**
+         * THREE.JS SETUP
+         */
+        const scene = new THREE.Scene();
+        
+        // Camera matching typical webcam FOV roughly
+        const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.z = 20;
+
+        // Renderer with preserveDrawingBuffer enabled for image capture
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+        /**
+         * VIDEO BACKGROUND
+         */
+        let videoMesh;
+        function createVideoBackground() {
+            const videoTexture = new THREE.VideoTexture(webcamVideo);
+            videoTexture.minFilter = THREE.LinearFilter;
+            
+            // Calculate aspect ratio to fit screen
+            const geometry = new THREE.PlaneGeometry(36, 20); // Arbitrary large size to fill frustum at Z=0 roughly
+            const material = new THREE.MeshBasicMaterial({ 
+                map: videoTexture,
+                depthTest: false,
+                depthWrite: false
+            });
+            
+            videoMesh = new THREE.Mesh(geometry, material);
+            // Push it back so particles are in front
+            videoMesh.position.z = -10;
+            // Mirror the video so it feels like a mirror
+            videoMesh.scale.x = -1; 
+            scene.add(videoMesh);
+        }
+
+        /**
+         * FIRE PARTICLE SYSTEM
+         */
+        let particleSystem;
+        const particlesData = [];
+
+        function createFireTexture() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 32;
+            canvas.height = 32;
+            const context = canvas.getContext('2d');
+            
+            // Radial gradient for soft puff
+            const gradient = context.createRadialGradient(16, 16, 0, 16, 16, 16);
+            gradient.addColorStop(0, 'rgba(255, 255, 200, 1)'); // Core (Hot)
+            gradient.addColorStop(0.4, 'rgba(255, 100, 0, 0.8)'); // Mid (Orange)
+            gradient.addColorStop(1, 'rgba(50, 0, 0, 0)'); // Edge (Smoke/Transparent)
+            
+            context.fillStyle = gradient;
+            context.fillRect(0, 0, 32, 32);
+            
+            const texture = new THREE.Texture(canvas);
+            texture.needsUpdate = true;
+            return texture;
+        }
+
+        function initParticles() {
+            const geometry = new THREE.BufferGeometry();
+            const vertices = [];
+            const sizes = [];
+            const colors = [];
+
+            for (let i = 0; i < config.maxParticles; i++) {
+                vertices.push(0, 0, 0);
+                sizes.push(0);
+                colors.push(1, 1, 1);
+                
+                particlesData.push({
+                    velocity: new THREE.Vector3(0, 0, 0),
+                    age: 0,
+                    life: 0,
+                    active: false
+                });
+            }
+
+            geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+            geometry.setAttribute('size', new THREE.Float32BufferAttribute(sizes, 1));
+            geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+
+            const material = new THREE.PointsMaterial({
+                size: 1.0,
+                map: createFireTexture(),
+                blending: THREE.AdditiveBlending,
+                depthWrite: false,
+                transparent: true,
+                vertexColors: true
+            });
+
+            particleSystem = new THREE.Points(geometry, material);
+            scene.add(particleSystem);
+        }
+
+        function updateParticles() {
+            if (!particleSystem) return;
+
+            const positions = particleSystem.geometry.attributes.position.array;
+            const sizes = particleSystem.geometry.attributes.size.array;
+            const colors = particleSystem.geometry.attributes.color.array;
+
+            // Spawn new particles if mouth is open
+            if (state.faceDetected && state.mouthOpenness > config.mouthThreshold) {
+                // Number of particles to spawn this frame depends on openness
+                const spawnCount = Math.floor(state.mouthOpenness * 10); // 0 to 10 particles per frame
+                
+                let spawned = 0;
+                for (let i = 0; i < config.maxParticles; i++) {
+                    if (spawned >= spawnCount) break;
+
+                    if (!particlesData[i].active) {
+                        particlesData[i].active = true;
+                        particlesData[i].age = 0;
+                        particlesData[i].life = 30 + Math.random() * 30; // Frames to live
+                        
+                        // Start at mouth position
+                        positions[i * 3] = state.mouthPosition.x;
+                        positions[i * 3 + 1] = state.mouthPosition.y;
+                        positions[i * 3 + 2] = state.mouthPosition.z;
+
+                        // Velocity Cone
+                        // Shoot towards +Z (camera)
+                        const spread = 0.5 * state.mouthOpenness;
+                        particlesData[i].velocity.set(
+                            (Math.random() - 0.5) * spread,
+                            (Math.random() - 0.5) * spread,
+                            (0.5 + Math.random() * 0.5) * config.fireSpeed * (1 + state.mouthOpenness)
+                        );
+                        
+                        spawned++;
+                    }
+                }
+            }
+
+            // Update existing particles
+            for (let i = 0; i < config.maxParticles; i++) {
+                if (particlesData[i].active) {
+                    const data = particlesData[i];
+                    
+                    // Move
+                    positions[i * 3] += data.velocity.x;
+                    positions[i * 3 + 1] += data.velocity.y;
+                    positions[i * 3 + 2] += data.velocity.z;
+
+                    // Gravity/Buoyancy (Fire goes up relative to world usually, but let's make it shoot out mostly)
+                    data.velocity.y += 0.005; // Slight rise
+
+                    // Age
+                    data.age++;
+                    
+                    // Size & Color over life
+                    const lifeRatio = data.age / data.life;
+                    
+                    // Scale: Grow then shrink
+                    // Base scale increases with mouth openness
+                    const baseScale = 2.0 * (0.5 + state.mouthOpenness * 2.0);
+                    sizes[i] = Math.sin(lifeRatio * Math.PI) * baseScale;
+
+                    // Color: White -> Orange -> Red -> Black
+                    if (lifeRatio < 0.2) {
+                        // Blue/White core
+                        colors[i * 3] = 1.0;
+                        colors[i * 3 + 1] = 1.0;
+                        colors[i * 3 + 2] = 0.8;
+                    } else if (lifeRatio < 0.5) {
+                        // Orange
+                        colors[i * 3] = 1.0;
+                        colors[i * 3 + 1] = 0.5;
+                        colors[i * 3 + 2] = 0.0;
+                    } else {
+                        // Red/Dark
+                        colors[i * 3] = 1.0 * (1 - lifeRatio);
+                        colors[i * 3 + 1] = 0.1 * (1 - lifeRatio);
+                        colors[i * 3 + 2] = 0.0;
+                    }
+
+                    // Kill
+                    if (data.age >= data.life) {
+                        data.active = false;
+                        // Move out of view
+                        sizes[i] = 0;
+                        positions[i*3] = 0;
+                        positions[i*3+1] = 0;
+                        positions[i*3+2] = -1000;
+                    }
+                }
+            }
+
+            particleSystem.geometry.attributes.position.needsUpdate = true;
+            particleSystem.geometry.attributes.size.needsUpdate = true;
+            particleSystem.geometry.attributes.color.needsUpdate = true;
+        }
+
+
+        /**
+         * MEDIAPIPE FACE MESH
+         */
+        function onResults(results) {
+            state.faceDetected = false;
+
+            if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+                state.faceDetected = true;
+                const landmarks = results.multiFaceLandmarks[0];
+
+                // Landmarks
+                // 13: Upper Lip Center
+                // 14: Lower Lip Center
+                // 78: Left Corner Mouth
+                // 308: Right Corner Mouth
+                
+                const upperLip = landmarks[13];
+                const lowerLip = landmarks[14];
+                const leftCorner = landmarks[78];
+                const rightCorner = landmarks[308];
+
+                // Calculate Openness
+                const mouthHeight = Math.hypot(upperLip.x - lowerLip.x, upperLip.y - lowerLip.y);
+                const mouthWidth = Math.hypot(leftCorner.x - rightCorner.x, leftCorner.y - rightCorner.y);
+                
+                // Aspect Ratio of mouth
+                const ratio = mouthHeight / mouthWidth;
+                
+                // Normalizing (Experimental calibration)
+                // Closed mouth is usually around 0.0 - 0.1 ratio
+                // Open mouth can be 0.5+
+                let openness = (ratio - 0.15) * 2.5;
+                state.mouthOpenness = Math.max(0, Math.min(1, openness));
+
+                // Map 2D landmarks to 3D world
+                const x = (1.0 - upperLip.x - 0.5) * 36; // Mirroring logic
+                const y = (0.5 - upperLip.y) * 20;
+                
+                state.mouthPosition.set(x, y, 0); 
+
+                // TRIGGER AUTO CAPTURE
+                // If mouth is very wide and we haven't captured yet
+                if (state.mouthOpenness > config.captureThreshold && !state.hasCaptured) {
+                    state.triggerCapture = true;
+                    state.hasCaptured = true; // Prevent multiple captures
+                    statusEl.innerText = "CAPTURING...";
+                }
+
+                // UI Status
+                if (state.mouthOpenness > config.mouthThreshold) {
+                    const pct = Math.round(state.mouthOpenness * 100);
+                    if (!state.triggerCapture) {
+                        statusEl.innerHTML = `FLAME OUTPUT: ${pct}%`;
+                        statusEl.style.color = '#ffaa00';
+                    }
+                } else {
+                    statusEl.innerHTML = `OPEN MOUTH TO IGNITE`;
+                    statusEl.style.color = '#888';
+                }
+
+            } else {
+                statusEl.innerHTML = "NO FACE DETECTED";
+            }
+        }
+
+        const faceMesh = new FaceMesh({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`;
+        }});
+
+        faceMesh.setOptions({
+            maxNumFaces: 1,
+            refineLandmarks: true,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+
+        faceMesh.onResults(onResults);
+
+        /**
+         * STARTUP
+         */
+        startBtn.addEventListener('click', async () => {
+            startBtn.style.display = 'none';
+            loadingEl.style.display = 'block';
+            
+            createVideoBackground();
+            initParticles();
+
+            const cameraUtils = new Camera(webcamVideo, {
+                onFrame: async () => {
+                    await faceMesh.send({image: webcamVideo});
+                },
+                width: 1280,
+                height: 720
+            });
+
+            try {
+                await cameraUtils.start();
+                
+                introEl.style.opacity = 0;
+                statusEl.style.opacity = 1;
+                setTimeout(() => {
+                    introEl.style.display = 'none';
+                }, 500);
+
+            } catch (e) {
+                console.error(e);
+                loadingEl.style.display = 'none';
+                startBtn.style.display = 'block';
+                startBtn.innerText = "CAMERA ERROR";
+            }
+        });
+
+        /**
+         * IMAGE CAPTURE & SHARE
+         */
+        function captureAndShare() {
+            try {
+                // Get image as base64
+                const dataURL = renderer.domElement.toDataURL("image/png");
+                
+                // 1. Download the image (Simulate "Capture")
+                // This usually works without blocking
+                const link = document.createElement('a');
+                link.download = 'dragon_moment.png';
+                link.href = dataURL;
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+
+                // 2. Open WhatsApp Link
+                // Note: The file is SAVED, not attached. User must attach manually.
+                const phone = "01123328475";
+                const text = encodeURIComponent("Check out my Dragon Breath!");
+                const url = `https://wa.me/01123328475?text=hiiii`;
+                
+                // Attempt to open immediately
+                const win = window.open(url, '_blank');
+                
+                if (win) {
+                    statusEl.innerText = "OPENING WHATSAPP... ATTACH IMAGE!";
+                } else {
+                    statusEl.innerText = "POPUP BLOCKED. TAP SCREEN TO SEND!";
+                    statusEl.style.color = "#ff0000";
+                    
+                    // Fallback: If blocked, wait for user to touch screen once
+                    const onInteraction = () => {
+                        window.open(url, '_blank');
+                        document.removeEventListener('click', onInteraction);
+                        document.removeEventListener('touchstart', onInteraction);
+                        statusEl.innerText = "OPENING WHATSAPP...";
+                    };
+                    document.addEventListener('click', onInteraction);
+                    document.addEventListener('touchstart', onInteraction);
+                }
+
+                // Reset after delay
+                setTimeout(() => {
+                     state.hasCaptured = false; 
+                     statusEl.innerText = "OPEN MOUTH TO IGNITE";
+                     statusEl.style.color = "#ff4500";
+                }, 5000);
+
+            } catch(e) {
+                console.error("Capture failed:", e);
+                state.hasCaptured = false;
+            }
+        }
+
+        /**
+         * RENDER LOOP
+         */
+        function animate() {
+            requestAnimationFrame(animate);
+            updateParticles();
+            renderer.render(scene, camera);
+
+            // Handle Capture Logic
+            // We do this immediately after render to ensure we catch the current frame
+            if (state.triggerCapture) {
+                state.triggerCapture = false; // Reset trigger
+                captureAndShare();
+            }
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        animate();
+
+    </script>
+</body>
+</html>
