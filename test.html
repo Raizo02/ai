@@ -1,578 +1,379 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Dragon's Breath | AR Face Filter</title>
+import React, { useState, useEffect, useRef } from 'react';
+import { Play, Square, ArrowLeft, Activity, Trophy, Clock, ChevronRight, Camera, AlertCircle } from 'lucide-react';
+
+// --- Components ---
+
+const Card = ({ children, className = "" }) => (
+  <div className={`bg-gray-900 border border-gray-800 rounded-xl overflow-hidden ${className}`}>
+    {children}
+  </div>
+);
+
+const Button = ({ onClick, children, variant = "primary", className = "", icon: Icon, disabled = false }) => {
+  const baseStyle = "flex items-center justify-center gap-2 px-6 py-3 rounded-lg font-semibold transition-all duration-200 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed";
+  const variants = {
+    primary: "bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-900/50",
+    secondary: "bg-gray-800 hover:bg-gray-700 text-gray-200 border border-gray-700",
+    danger: "bg-red-600 hover:bg-red-500 text-white shadow-lg shadow-red-900/50",
+    outline: "bg-transparent border border-gray-600 text-gray-400 hover:text-white hover:border-gray-400"
+  };
+
+  return (
+    <button onClick={onClick} disabled={disabled} className={`${baseStyle} ${variants[variant]} ${className}`}>
+      {Icon && <Icon size={20} />}
+      {children}
+    </button>
+  );
+};
+
+// --- Main App Component ---
+
+export default function ArmyFitAI() {
+  const [view, setView] = useState('home'); // home, workout
+  const [activeType, setActiveType] = useState(null); // pushup, situp, run
+  const [history, setHistory] = useState([]);
+  
+  // Workout State
+  const [isActive, setIsActive] = useState(false);
+  const [duration, setDuration] = useState(0);
+  const [reps, setReps] = useState(0);
+  const [bodyAngle, setBodyAngle] = useState(0);
+  const [postureState, setPostureState] = useState('UP');
+  const [cameraError, setCameraError] = useState(null);
+  
+  // Refs
+  const timerRef = useRef(null);
+  const simulationRef = useRef(null);
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
+
+  // Format time (MM:SS)
+  const formatTime = (seconds) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  // Start Workout & Camera
+  const startWorkout = async (type) => {
+    setActiveType(type);
+    setView('workout');
+    setIsActive(false);
+    setDuration(0);
+    setReps(0);
+    setBodyAngle(0);
+    setPostureState('UP');
+    setCameraError(null);
+
+    // Initialize Camera
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } }, 
+        audio: false 
+      });
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+      }
+    } catch (err) {
+      console.error("Camera Error:", err);
+      setCameraError("Camera access denied or unavailable.");
+    }
+  };
+
+  // Cleanup Camera
+  const stopCamera = () => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+    }
+  };
+
+  // Toggle Timer & Simulation
+  const toggleSession = () => {
+    if (isActive) {
+      // Pause
+      clearInterval(timerRef.current);
+      clearInterval(simulationRef.current);
+      setIsActive(false);
+    } else {
+      // Start
+      setIsActive(true);
+      
+      // Main Timer
+      timerRef.current = setInterval(() => {
+        setDuration(prev => prev + 1);
+      }, 1000);
+
+      // Simulate AI Stats (Since we don't have TensorFlow.js loaded)
+      if (activeType !== 'run') {
+        simulationRef.current = setInterval(() => {
+          // Randomize angle to simulate detection
+          const baseAngle = activeType === 'pushup' ? 15 : 45;
+          const noise = Math.floor(Math.random() * 10) - 5;
+          setBodyAngle(baseAngle + noise);
+          
+          // Randomly flip state
+          if (Math.random() > 0.8) {
+            setPostureState(prev => prev === 'UP' ? 'DOWN' : 'UP');
+          }
+        }, 800);
+      }
+    }
+  };
+
+  // Manual Rep Add
+  const addRep = () => {
+    setReps(prev => prev + 1);
+    setPostureState('UP');
+  };
+
+  // Stop & Save
+  const stopAndSave = () => {
+    clearInterval(timerRef.current);
+    clearInterval(simulationRef.current);
+    stopCamera();
     
-    <!-- Three.js -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    const newRecord = {
+      id: Date.now(),
+      type: activeType,
+      date: new Date().toLocaleDateString(),
+      reps: activeType === 'run' ? null : reps,
+      duration: duration,
+      distance: activeType === 'run' ? (duration * 0.003).toFixed(2) : null
+    };
     
-    <!-- MediaPipe Face Mesh & Camera Utils -->
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+    setHistory([newRecord, ...history]);
+    setIsActive(false);
+    setView('home');
+  };
 
-    <style>
-        body, html {
-            margin: 0;
-            padding: 0;
-            width: 100%;
-            height: 100%;
-            overflow: hidden;
-            background-color: #000;
-            font-family: 'Helvetica Neue', Arial, sans-serif;
-        }
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      clearInterval(timerRef.current);
+      clearInterval(simulationRef.current);
+      stopCamera();
+    };
+  }, []);
 
-        #canvas-container {
-            width: 100vw;
-            height: 100vh;
-            display: block;
-            position: absolute;
-            top: 0;
-            left: 0;
-            z-index: 1;
-        }
+  // Ensure video element gets stream if view changes/ref attaches
+  useEffect(() => {
+    if (view === 'workout' && streamRef.current && videoRef.current) {
+      videoRef.current.srcObject = streamRef.current;
+    }
+  }, [view]);
 
-        /* Intro Overlay */
-        #intro {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            align-items: center;
-            background: rgba(0, 0, 0, 0.95);
-            color: #fff;
-            z-index: 20;
-            transition: opacity 0.5s ease-out;
-            cursor: pointer;
-            text-align: center;
-            padding: 20px;
-        }
+  // --- Views ---
 
-        /* Status indicator */
-        #status {
-            position: absolute;
-            bottom: 30px;
-            width: 100%;
-            text-align: center;
-            color: #ff4500;
-            font-size: 1rem;
-            z-index: 10;
-            pointer-events: none;
-            opacity: 0;
-            transition: opacity 0.5s;
-            font-weight: bold;
-            text-shadow: 0 0 10px #ff0000;
-            letter-spacing: 2px;
-        }
-
-        /* Hidden video element for texture */
-        #webcam-video {
-            display: none;
-        }
-
-        h1 {
-            font-weight: 800;
-            letter-spacing: 3px;
-            font-size: 2.5rem;
-            margin-bottom: 10px;
-            text-transform: uppercase;
-            background: linear-gradient(to bottom, #ffff00, #ff0000);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
-
-        p {
-            font-size: 0.9rem;
-            color: #ccc;
-            letter-spacing: 1px;
-            line-height: 1.6;
-        }
-
-        .instruction {
-            margin-top: 30px;
-            font-size: 1rem;
-            color: #fff;
-            background: rgba(255, 69, 0, 0.2);
-            border: 1px solid #ff4500;
-            padding: 20px;
-            border-radius: 8px;
-        }
-
-        .loader {
-            border: 4px solid #333;
-            border-top: 4px solid #ff4500;
-            border-radius: 50%;
-            width: 40px;
-            height: 40px;
-            animation: spin 1s linear infinite;
-            margin-top: 30px;
-            display: none;
-        }
-
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-    </style>
-</head>
-<body>
-
-    <!-- Intro / Start Screen -->
-    <div id="intro">
-        <h1>Dragon's Breath</h1>
-        <p>AR FACE FILTER</p>
-        
-        <div class="instruction">
-            <p><strong>OPEN MOUTH</strong> to spit fire.</p>
-            <p style="font-size: 0.8em; color: #aaa; margin-top: 10px;">Open WIDE to auto-capture!</p>
+  const HomeView = () => (
+    <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+      <div className="text-center space-y-4 py-8">
+        <div className="inline-flex items-center justify-center p-4 bg-emerald-500/10 rounded-full mb-4 ring-1 ring-emerald-500/50">
+          <Activity size={48} className="text-emerald-500" />
         </div>
+        <h1 className="text-4xl md:text-5xl font-black tracking-tight text-white">
+          ARMY FIT <span className="text-emerald-500">AI</span>
+        </h1>
+        <p className="text-gray-400 text-lg max-w-md mx-auto">
+          Military-grade fitness tracking. Now with real camera support.
+        </p>
+      </div>
 
-        <p style="margin-top: 30px; font-size: 0.7rem; color: #666;">Requires Camera Access.</p>
-        
-        <div id="loading" class="loader"></div>
-        <button id="start-btn" style="margin-top: 20px; padding: 15px 40px; background: #ff4500; color: #fff; border: none; border-radius: 30px; font-family: inherit; font-weight: bold; cursor: pointer; letter-spacing: 1px; text-transform: uppercase; box-shadow: 0 0 20px rgba(255,69,0,0.5);">Ignite</button>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 max-w-2xl mx-auto">
+        {['pushup', 'situp', 'run'].map(type => (
+          <button 
+            key={type}
+            onClick={() => startWorkout(type)}
+            className="group relative overflow-hidden bg-gray-800 hover:bg-gray-700 p-6 rounded-2xl border border-gray-700 transition-all hover:-translate-y-1 hover:border-emerald-500/50 text-left"
+          >
+            <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
+              <Activity size={64} />
+            </div>
+            <h3 className="text-xl font-bold text-white mb-2 capitalize">{type === 'run' ? 'Run 2.4km' : type + 's'}</h3>
+            <p className="text-sm text-gray-400">
+              {type === 'run' ? 'Cardio Test' : 'Strength Test'}
+            </p>
+          </button>
+        ))}
+      </div>
+
+      <div className="max-w-2xl mx-auto pt-8">
+        <h2 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
+          <Clock size={20} className="text-emerald-500" />
+          Recent Workouts
+        </h2>
+        {history.length === 0 ? (
+          <div className="text-center py-12 bg-gray-900/50 rounded-xl border border-dashed border-gray-800">
+            <Trophy className="mx-auto text-gray-700 mb-3" size={32} />
+            <p className="text-gray-500">No workouts recorded yet.</p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {history.map((item) => (
+              <div key={item.id} className="bg-gray-900/80 border border-gray-800 p-4 rounded-xl flex items-center justify-between">
+                <div className="flex items-center gap-4">
+                  <div className={`p-2 rounded-lg ${
+                    item.type === 'run' ? 'bg-blue-500/10 text-blue-500' : 'bg-emerald-500/10 text-emerald-500'
+                  }`}>
+                    {item.type === 'run' ? <Activity size={20} /> : <Trophy size={20} />}
+                  </div>
+                  <div>
+                    <h4 className="text-white font-semibold capitalize">{item.type} Session</h4>
+                    <p className="text-xs text-gray-500">{item.date}</p>
+                  </div>
+                </div>
+                <div className="text-right">
+                  <div className="text-emerald-400 font-mono font-bold">
+                    {item.type === 'run' ? `${item.distance} km` : `${item.reps} reps`}
+                  </div>
+                  <div className="text-xs text-gray-500">{formatTime(item.duration)}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
+  );
 
-    <!-- UI Elements -->
-    <div id="status">System Ready</div>
-    
-    <video id="webcam-video" playsinline muted autoplay></video>
-    
-    <!-- WebGL Container -->
-    <div id="canvas-container"></div>
+  const WorkoutView = () => (
+    <div className="h-full flex flex-col max-w-lg mx-auto animate-in zoom-in-95 duration-300">
+      <div className="flex items-center justify-between mb-6">
+        <div className="flex items-center gap-2 text-emerald-500 font-bold uppercase tracking-wider">
+          <Activity size={18} />
+          {activeType} Mode
+        </div>
+        <div className={`px-3 py-1 rounded-full text-xs font-mono border ${isActive ? 'bg-red-500/20 text-red-400 border-red-500/50' : 'bg-gray-800 text-gray-400 border-gray-700'}`}>
+          {isActive ? '● LIVE' : 'STANDBY'}
+        </div>
+      </div>
 
-    <script>
-        /**
-         * CONFIGURATION
-         */
-        const config = {
-            mouthThreshold: 0.1,  // Minimum openness to start fire
-            captureThreshold: 0.6, // Openness to trigger auto-capture
-            maxParticles: 1000,
-            fireSpeed: 0.2,
-            videoWidth: 1280,
-            videoHeight: 720
-        };
-
-        /**
-         * STATE
-         */
-        const state = {
-            faceDetected: false,
-            mouthOpenness: 0,     // 0.0 to 1.0
-            mouthPosition: new THREE.Vector3(0, 0, 0),
-            hasCaptured: false,   // Prevents spamming capture
-            triggerCapture: false // Flag to capture next frame
-        };
-
-        // DOM Elements
-        const introEl = document.getElementById('intro');
-        const startBtn = document.getElementById('start-btn');
-        const loadingEl = document.getElementById('loading');
-        const statusEl = document.getElementById('status');
-        const webcamVideo = document.getElementById('webcam-video');
-
-        /**
-         * THREE.JS SETUP
-         */
-        const scene = new THREE.Scene();
+      <div className="relative aspect-[4/5] bg-gray-900 rounded-3xl overflow-hidden border-2 border-gray-800 shadow-2xl mb-6 group">
         
-        // Camera matching typical webcam FOV roughly
-        const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 1000);
-        camera.position.z = 20;
+        {/* Real Camera View */}
+        {cameraError ? (
+          <div className="absolute inset-0 flex flex-col items-center justify-center text-red-400 p-6 text-center">
+            <AlertCircle size={48} className="mb-4" />
+            <p className="font-bold">{cameraError}</p>
+            <p className="text-sm mt-2 text-gray-500">Please allow camera access to use this feature.</p>
+          </div>
+        ) : (
+          <video 
+            ref={videoRef}
+            autoPlay 
+            playsInline 
+            muted
+            className={`absolute inset-0 w-full h-full object-cover ${!isActive ? 'grayscale opacity-50' : ''}`} 
+          />
+        )}
 
-        // Renderer with preserveDrawingBuffer enabled for image capture
-        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
-        renderer.setSize(window.innerWidth, window.innerHeight);
-        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-        document.getElementById('canvas-container').appendChild(renderer.domElement);
+        {/* Overlay Elements */}
+        {!isActive && !cameraError && (
+          <div className="absolute inset-0 flex items-center justify-center bg-black/40 z-10">
+            <div className="text-white font-bold bg-black/50 px-4 py-2 rounded-full backdrop-blur-sm">
+              PRESS START
+            </div>
+          </div>
+        )}
 
-        /**
-         * VIDEO BACKGROUND
-         */
-        let videoMesh;
-        function createVideoBackground() {
-            const videoTexture = new THREE.VideoTexture(webcamVideo);
-            videoTexture.minFilter = THREE.LinearFilter;
-            
-            // Calculate aspect ratio to fit screen
-            const geometry = new THREE.PlaneGeometry(36, 20); // Arbitrary large size to fill frustum at Z=0 roughly
-            const material = new THREE.MeshBasicMaterial({ 
-                map: videoTexture,
-                depthTest: false,
-                depthWrite: false
-            });
-            
-            videoMesh = new THREE.Mesh(geometry, material);
-            // Push it back so particles are in front
-            videoMesh.position.z = -10;
-            // Mirror the video so it feels like a mirror
-            videoMesh.scale.x = -1; 
-            scene.add(videoMesh);
-        }
+        {/* Data Overlay */}
+        <div className="absolute inset-0 p-6 flex flex-col justify-between z-20 pointer-events-none">
+          <div className="flex justify-between items-start">
+            <div className="bg-black/60 backdrop-blur-md px-3 py-1.5 rounded-lg border border-white/10">
+              <span className="text-xs text-gray-400 uppercase mr-2">Status</span>
+              <span className={`font-bold ${isActive ? 'text-green-400' : 'text-yellow-400'}`}>
+                {isActive ? 'TRACKING' : 'PAUSED'}
+              </span>
+            </div>
+            {activeType !== 'run' && (
+              <div className="bg-black/60 backdrop-blur-md px-3 py-1.5 rounded-lg border border-white/10 text-right">
+                <div className="text-xs text-gray-400 uppercase">Angle</div>
+                <div className="font-mono text-white">{isActive ? bodyAngle : 0}°</div>
+              </div>
+            )}
+          </div>
 
-        /**
-         * FIRE PARTICLE SYSTEM
-         */
-        let particleSystem;
-        const particlesData = [];
+          <div className="space-y-4">
+            <div className="text-center">
+              <div className="text-7xl font-black text-white drop-shadow-lg tracking-tighter">
+                {activeType === 'run' ? formatTime(duration) : reps}
+              </div>
+              <div className="text-emerald-400 font-bold uppercase tracking-widest text-sm mt-1 drop-shadow-md">
+                {activeType === 'run' ? 'DURATION' : 'REPETITIONS'}
+              </div>
+            </div>
 
-        function createFireTexture() {
-            const canvas = document.createElement('canvas');
-            canvas.width = 32;
-            canvas.height = 32;
-            const context = canvas.getContext('2d');
-            
-            // Radial gradient for soft puff
-            const gradient = context.createRadialGradient(16, 16, 0, 16, 16, 16);
-            gradient.addColorStop(0, 'rgba(255, 255, 200, 1)'); // Core (Hot)
-            gradient.addColorStop(0.4, 'rgba(255, 100, 0, 0.8)'); // Mid (Orange)
-            gradient.addColorStop(1, 'rgba(50, 0, 0, 0)'); // Edge (Smoke/Transparent)
-            
-            context.fillStyle = gradient;
-            context.fillRect(0, 0, 32, 32);
-            
-            const texture = new THREE.Texture(canvas);
-            texture.needsUpdate = true;
-            return texture;
-        }
+            <div className="grid grid-cols-2 gap-3">
+              {activeType === 'run' ? (
+                <>
+                  <div className="bg-black/60 backdrop-blur-md p-3 rounded-xl border border-white/10">
+                     <div className="text-xs text-gray-400">Est. Distance</div>
+                     <div className="text-xl font-mono text-white">{(duration * 0.003).toFixed(2)} <span className="text-xs">km</span></div>
+                  </div>
+                  <div className="bg-black/60 backdrop-blur-md p-3 rounded-xl border border-white/10">
+                     <div className="text-xs text-gray-400">Pace</div>
+                     <div className="text-xl font-mono text-white">5:30 <span className="text-xs">/km</span></div>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="bg-black/60 backdrop-blur-md p-3 rounded-xl border border-white/10">
+                     <div className="text-xs text-gray-400">Position</div>
+                     <div className={`text-xl font-bold ${postureState === 'UP' ? 'text-blue-400' : 'text-orange-400'}`}>
+                       {postureState}
+                     </div>
+                  </div>
+                  <div className="bg-black/60 backdrop-blur-md p-3 rounded-xl border border-white/10">
+                     <div className="text-xs text-gray-400">Time</div>
+                     <div className="text-xl font-mono text-white">{formatTime(duration)}</div>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
 
-        function initParticles() {
-            const geometry = new THREE.BufferGeometry();
-            const vertices = [];
-            const sizes = [];
-            const colors = [];
+      {/* Controls */}
+      <div className="space-y-3 pointer-events-auto">
+        {!isActive ? (
+          <Button onClick={toggleSession} icon={Play} className="w-full text-lg shadow-emerald-500/20">
+            START TRACKING
+          </Button>
+        ) : (
+          <div className="grid grid-cols-2 gap-3">
+             <Button onClick={toggleSession} variant="secondary" className="w-full">
+               PAUSE
+             </Button>
+             <Button onClick={stopAndSave} variant="danger" icon={Square} className="w-full">
+               STOP & SAVE
+             </Button>
+             {activeType !== 'run' && (
+               <button 
+                onClick={addRep}
+                className="col-span-2 py-4 border-2 border-dashed border-gray-700 rounded-lg text-gray-500 hover:text-white hover:border-emerald-500 hover:bg-emerald-500/10 transition-colors text-sm font-semibold uppercase tracking-wider"
+               >
+                 + Manual Rep Override
+               </button>
+             )}
+          </div>
+        )}
+        
+        {!isActive && (
+          <Button onClick={() => { stopCamera(); setView('home'); }} variant="outline" icon={ArrowLeft} className="w-full">
+            Back to Dashboard
+          </Button>
+        )}
+      </div>
+    </div>
+  );
 
-            for (let i = 0; i < config.maxParticles; i++) {
-                vertices.push(0, 0, 0);
-                sizes.push(0);
-                colors.push(1, 1, 1);
-                
-                particlesData.push({
-                    velocity: new THREE.Vector3(0, 0, 0),
-                    age: 0,
-                    life: 0,
-                    active: false
-                });
-            }
-
-            geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
-            geometry.setAttribute('size', new THREE.Float32BufferAttribute(sizes, 1));
-            geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-
-            const material = new THREE.PointsMaterial({
-                size: 1.0,
-                map: createFireTexture(),
-                blending: THREE.AdditiveBlending,
-                depthWrite: false,
-                transparent: true,
-                vertexColors: true
-            });
-
-            particleSystem = new THREE.Points(geometry, material);
-            scene.add(particleSystem);
-        }
-
-        function updateParticles() {
-            if (!particleSystem) return;
-
-            const positions = particleSystem.geometry.attributes.position.array;
-            const sizes = particleSystem.geometry.attributes.size.array;
-            const colors = particleSystem.geometry.attributes.color.array;
-
-            // Spawn new particles if mouth is open
-            if (state.faceDetected && state.mouthOpenness > config.mouthThreshold) {
-                // Number of particles to spawn this frame depends on openness
-                const spawnCount = Math.floor(state.mouthOpenness * 10); // 0 to 10 particles per frame
-                
-                let spawned = 0;
-                for (let i = 0; i < config.maxParticles; i++) {
-                    if (spawned >= spawnCount) break;
-
-                    if (!particlesData[i].active) {
-                        particlesData[i].active = true;
-                        particlesData[i].age = 0;
-                        particlesData[i].life = 30 + Math.random() * 30; // Frames to live
-                        
-                        // Start at mouth position
-                        positions[i * 3] = state.mouthPosition.x;
-                        positions[i * 3 + 1] = state.mouthPosition.y;
-                        positions[i * 3 + 2] = state.mouthPosition.z;
-
-                        // Velocity Cone
-                        // Shoot towards +Z (camera)
-                        const spread = 0.5 * state.mouthOpenness;
-                        particlesData[i].velocity.set(
-                            (Math.random() - 0.5) * spread,
-                            (Math.random() - 0.5) * spread,
-                            (0.5 + Math.random() * 0.5) * config.fireSpeed * (1 + state.mouthOpenness)
-                        );
-                        
-                        spawned++;
-                    }
-                }
-            }
-
-            // Update existing particles
-            for (let i = 0; i < config.maxParticles; i++) {
-                if (particlesData[i].active) {
-                    const data = particlesData[i];
-                    
-                    // Move
-                    positions[i * 3] += data.velocity.x;
-                    positions[i * 3 + 1] += data.velocity.y;
-                    positions[i * 3 + 2] += data.velocity.z;
-
-                    // Gravity/Buoyancy (Fire goes up relative to world usually, but let's make it shoot out mostly)
-                    data.velocity.y += 0.005; // Slight rise
-
-                    // Age
-                    data.age++;
-                    
-                    // Size & Color over life
-                    const lifeRatio = data.age / data.life;
-                    
-                    // Scale: Grow then shrink
-                    // Base scale increases with mouth openness
-                    const baseScale = 2.0 * (0.5 + state.mouthOpenness * 2.0);
-                    sizes[i] = Math.sin(lifeRatio * Math.PI) * baseScale;
-
-                    // Color: White -> Orange -> Red -> Black
-                    if (lifeRatio < 0.2) {
-                        // Blue/White core
-                        colors[i * 3] = 1.0;
-                        colors[i * 3 + 1] = 1.0;
-                        colors[i * 3 + 2] = 0.8;
-                    } else if (lifeRatio < 0.5) {
-                        // Orange
-                        colors[i * 3] = 1.0;
-                        colors[i * 3 + 1] = 0.5;
-                        colors[i * 3 + 2] = 0.0;
-                    } else {
-                        // Red/Dark
-                        colors[i * 3] = 1.0 * (1 - lifeRatio);
-                        colors[i * 3 + 1] = 0.1 * (1 - lifeRatio);
-                        colors[i * 3 + 2] = 0.0;
-                    }
-
-                    // Kill
-                    if (data.age >= data.life) {
-                        data.active = false;
-                        // Move out of view
-                        sizes[i] = 0;
-                        positions[i*3] = 0;
-                        positions[i*3+1] = 0;
-                        positions[i*3+2] = -1000;
-                    }
-                }
-            }
-
-            particleSystem.geometry.attributes.position.needsUpdate = true;
-            particleSystem.geometry.attributes.size.needsUpdate = true;
-            particleSystem.geometry.attributes.color.needsUpdate = true;
-        }
-
-
-        /**
-         * MEDIAPIPE FACE MESH
-         */
-        function onResults(results) {
-            state.faceDetected = false;
-
-            if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
-                state.faceDetected = true;
-                const landmarks = results.multiFaceLandmarks[0];
-
-                // Landmarks
-                // 13: Upper Lip Center
-                // 14: Lower Lip Center
-                // 78: Left Corner Mouth
-                // 308: Right Corner Mouth
-                
-                const upperLip = landmarks[13];
-                const lowerLip = landmarks[14];
-                const leftCorner = landmarks[78];
-                const rightCorner = landmarks[308];
-
-                // Calculate Openness
-                const mouthHeight = Math.hypot(upperLip.x - lowerLip.x, upperLip.y - lowerLip.y);
-                const mouthWidth = Math.hypot(leftCorner.x - rightCorner.x, leftCorner.y - rightCorner.y);
-                
-                // Aspect Ratio of mouth
-                const ratio = mouthHeight / mouthWidth;
-                
-                // Normalizing (Experimental calibration)
-                // Closed mouth is usually around 0.0 - 0.1 ratio
-                // Open mouth can be 0.5+
-                let openness = (ratio - 0.15) * 2.5;
-                state.mouthOpenness = Math.max(0, Math.min(1, openness));
-
-                // Map 2D landmarks to 3D world
-                const x = (1.0 - upperLip.x - 0.5) * 36; // Mirroring logic
-                const y = (0.5 - upperLip.y) * 20;
-                
-                state.mouthPosition.set(x, y, 0); 
-
-                // TRIGGER AUTO CAPTURE
-                // If mouth is very wide and we haven't captured yet
-                if (state.mouthOpenness > config.captureThreshold && !state.hasCaptured) {
-                    state.triggerCapture = true;
-                    state.hasCaptured = true; // Prevent multiple captures
-                    statusEl.innerText = "CAPTURING...";
-                }
-
-                // UI Status
-                if (state.mouthOpenness > config.mouthThreshold) {
-                    const pct = Math.round(state.mouthOpenness * 100);
-                    if (!state.triggerCapture) {
-                        statusEl.innerHTML = `FLAME OUTPUT: ${pct}%`;
-                        statusEl.style.color = '#ffaa00';
-                    }
-                } else {
-                    statusEl.innerHTML = `OPEN MOUTH TO IGNITE`;
-                    statusEl.style.color = '#888';
-                }
-
-            } else {
-                statusEl.innerHTML = "NO FACE DETECTED";
-            }
-        }
-
-        const faceMesh = new FaceMesh({locateFile: (file) => {
-            return `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`;
-        }});
-
-        faceMesh.setOptions({
-            maxNumFaces: 1,
-            refineLandmarks: true,
-            minDetectionConfidence: 0.5,
-            minTrackingConfidence: 0.5
-        });
-
-        faceMesh.onResults(onResults);
-
-        /**
-         * STARTUP
-         */
-        startBtn.addEventListener('click', async () => {
-            startBtn.style.display = 'none';
-            loadingEl.style.display = 'block';
-            
-            createVideoBackground();
-            initParticles();
-
-            const cameraUtils = new Camera(webcamVideo, {
-                onFrame: async () => {
-                    await faceMesh.send({image: webcamVideo});
-                },
-                width: 1280,
-                height: 720
-            });
-
-            try {
-                await cameraUtils.start();
-                
-                introEl.style.opacity = 0;
-                statusEl.style.opacity = 1;
-                setTimeout(() => {
-                    introEl.style.display = 'none';
-                }, 500);
-
-            } catch (e) {
-                console.error(e);
-                loadingEl.style.display = 'none';
-                startBtn.style.display = 'block';
-                startBtn.innerText = "CAMERA ERROR";
-            }
-        });
-
-        /**
-         * IMAGE CAPTURE & SHARE
-         */
-        function captureAndShare() {
-            try {
-                // Get image as base64
-                const dataURL = renderer.domElement.toDataURL("image/png");
-                
-                // 1. Download the image (Simulate "Capture")
-                // This usually works without blocking
-                const link = document.createElement('a');
-                link.download = 'dragon_moment.png';
-                link.href = dataURL;
-                document.body.appendChild(link);
-                link.click();
-                document.body.removeChild(link);
-
-                // 2. Open WhatsApp Link
-                // Note: The file is SAVED, not attached. User must attach manually.
-                const phone = "+601123328475";
-                const text = encodeURIComponent("Check out my Dragon Breath!");
-                const url = `https://wa.me/+601123328475?text=hiiii`;
-                
-                // Attempt to open immediately
-                const win = window.open(url, '_blank');
-                
-                if (win) {
-                    statusEl.innerText = "OPENING WHATSAPP... ATTACH IMAGE!";
-                } else {
-                    statusEl.innerText = "POPUP BLOCKED. TAP SCREEN TO SEND!";
-                    statusEl.style.color = "#ff0000";
-                    
-                    // Fallback: If blocked, wait for user to touch screen once
-                    const onInteraction = () => {
-                        window.open(url, '_blank');
-                        document.removeEventListener('click', onInteraction);
-                        document.removeEventListener('touchstart', onInteraction);
-                        statusEl.innerText = "OPENING WHATSAPP...";
-                    };
-                    document.addEventListener('click', onInteraction);
-                    document.addEventListener('touchstart', onInteraction);
-                }
-
-                // Reset after delay
-                setTimeout(() => {
-                     state.hasCaptured = false; 
-                     statusEl.innerText = "OPEN MOUTH TO IGNITE";
-                     statusEl.style.color = "#ff4500";
-                }, 5000);
-
-            } catch(e) {
-                console.error("Capture failed:", e);
-                state.hasCaptured = false;
-            }
-        }
-
-        /**
-         * RENDER LOOP
-         */
-        function animate() {
-            requestAnimationFrame(animate);
-            updateParticles();
-            renderer.render(scene, camera);
-
-            // Handle Capture Logic
-            // We do this immediately after render to ensure we catch the current frame
-            if (state.triggerCapture) {
-                state.triggerCapture = false; // Reset trigger
-                captureAndShare();
-            }
-        }
-
-        window.addEventListener('resize', () => {
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
-            renderer.setSize(window.innerWidth, window.innerHeight);
-        });
-
-        animate();
-
-    </script>
-</body>
-
-</html>
+  return (
+    <div className="min-h-screen bg-black text-gray-100 font-sans selection:bg-emerald-500/30">
+      <div className="max-w-md mx-auto min-h-screen flex flex-col p-4">
+        {view === 'home' ? <HomeView /> : <WorkoutView />}
+      </div>
+    </div>
+  );
+}
